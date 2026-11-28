@@ -1,52 +1,460 @@
-<%- include("partials/header") %>
+<%
+  const weekDays = ["일", "월", "화", "수", "목", "금", "토"];
 
-<h1>나의 할 일</h1>
+  function toDateKey(val) {
+    if (!val) return "";
+    const d = new Date(val);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
 
-<!-- [C] 등록 폼 (실습 2) -->
-<form method="POST" action="/todos" class="add-form">
-  <input type="text" name="title" placeholder="할 일을 입력하세요" required>
-  <input type="date" name="due_date" title="마감일 (선택)">
-  <button type="submit">추가</button>
-</form>
+  function formatKoreanDate(key) {
+    if (!key) return "마감일 미지정";
+    const [y, m, d] = key.split("-").map(Number);
+    const dateObj = new Date(y, m - 1, d);
+    return `${y}년 ${m}월 ${d}일 (${weekDays[dateObj.getDay()]})`;
+  }
 
-<!-- 필터 (실습 5) -->
-<nav class="filter">
-  <a href="/todos" class="<%= filter === 'all' ? 'on' : '' %>">전체</a>
-  <a href="/todos?filter=active" class="<%= filter === 'active' ? 'on' : '' %>">미완료</a>
-  <a href="/todos?filter=done" class="<%= filter === 'done' ? 'on' : '' %>">완료</a>
-</nav>
+  function formatDateRangeLabel(startVal, dueVal) {
+    const startText = startVal ? new Date(startVal).toLocaleDateString("ko-KR") : "";
+    const dueText = dueVal ? new Date(dueVal).toLocaleDateString("ko-KR") : "";
+    if (startText && dueText && startText !== dueText) {
+      return `${startText} ~ ${dueText}`;
+    }
+    if (startText && !dueText) {
+      return `${startText} ~`;
+    }
+    if (dueText) {
+      return dueText;
+    }
+    return "기한 없음";
+  }
 
-<% if (todos.length === 0) { %>
-  <p class="empty">표시할 할 일이 없습니다.</p>
-<% } else { %>
-  <ul class="todo-list">
-    <% todos.forEach(function (todo) { %>
-      <li>
-        <!-- [U] 완료 토글 (실습 3) -->
-        <form method="POST" action="/todos/<%= todo.id %>/toggle">
-          <button type="submit" class="check <%= todo.done ? 'checked' : '' %>">
-            <%= todo.done ? "✓" : "" %>
-          </button>
-        </form>
+  function normalizePriority(val) {
+    const n = Number(val);
+    return [1, 2, 3].includes(n) ? n : 2;
+  }
 
-        <span class="title <%= todo.done ? 'done' : '' %>">
-          <%= todo.title %>
-          <% if (todo.due_date) { %>
-            <small class="due">~<%= new Date(todo.due_date).toLocaleDateString("ko-KR") %></small>
-          <% } %>
-        </span>
+  function priorityLabel(p) {
+    if (p === 1) return "낮음";
+    if (p === 3) return "높음";
+    return "보통";
+  }
 
-        <!-- [U] 수정 (실습 3) -->
-        <a class="edit-link" href="/todos/<%= todo.id %>/edit">수정</a>
+  const now = new Date();
+  const todayKey = toDateKey(now);
+  const tomorrowObj = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const tomorrowKey = toDateKey(tomorrowObj);
 
-        <!-- [D] 삭제 (실습 4) -->
-        <form method="POST" action="/todos/<%= todo.id %>/delete"
-              onsubmit="return confirm('삭제할까요?');">
-          <button type="submit" class="delete">삭제</button>
-        </form>
-      </li>
-    <% }); %>
-  </ul>
-<% } %>
+  const safeStats = typeof stats !== "undefined" && stats
+    ? stats
+    : {
+        total: todos.length,
+        done: todos.filter((t) => t.done).length,
+        active: todos.filter((t) => !t.done).length,
+      };
+
+  const safeTodayTodos = typeof todayTodos !== "undefined" && Array.isArray(todayTodos)
+    ? todayTodos
+    : todos.filter((t) => {
+        const s = toDateKey(t.start_date);
+        const e = toDateKey(t.due_date);
+        if (s && e) return s <= todayKey && todayKey <= e;
+        return s === todayKey || e === todayKey;
+      });
+
+  const completionRate = safeStats.total > 0
+    ? Math.round((safeStats.done / safeStats.total) * 100)
+    : 0;
+
+  // 날짜별 그룹화 (시작일 우선, 없으면 마감일 기준)
+  const groupMap = new Map();
+  todos.forEach((todo) => {
+    const startKey = toDateKey(todo.start_date);
+    const dueKey = toDateKey(todo.due_date);
+    const primaryKey = startKey || dueKey || "__nodate__";
+    if (!groupMap.has(primaryKey)) {
+      let badge = "";
+      let badgeType = "neutral";
+      if (primaryKey === todayKey) {
+        badge = "오늘";
+        badgeType = "indigo";
+      } else if (primaryKey === tomorrowKey) {
+        badge = "내일";
+        badgeType = "sky";
+      } else if (primaryKey !== "__nodate__" && primaryKey < todayKey) {
+        badge = "지난 일정";
+        badgeType = "amber";
+      } else if (primaryKey === "__nodate__") {
+        badge = "상시";
+        badgeType = "neutral";
+      }
+
+      groupMap.set(primaryKey, {
+        key: primaryKey,
+        label: primaryKey === "__nodate__" ? "일정 미지정" : formatKoreanDate(primaryKey),
+        badge,
+        badgeType,
+        items: [],
+      });
+    }
+    groupMap.get(primaryKey).items.push(todo);
+  });
+  const dateGroups = Array.from(groupMap.values());
+
+  // 달력 렌더링용 직렬화 데이터
+  const serializedTodos = todos.map((t) => ({
+    id: t.id,
+    title: t.title,
+    done: Boolean(t.done),
+    priority: normalizePriority(t.priority),
+    startDateKey: toDateKey(t.start_date),
+    dateKey: toDateKey(t.due_date),
+  }));
+  const todosJson = JSON.stringify(serializedTodos).replace(/</g, "\\u003c");
+%>
+
+<%- include("partials/header", { filter, stats: safeStats, pageTitle: "일정 및 할 일", showSearch: true }) %>
+
+<!-- 통계 카드 영역 -->
+<section class="stats-grid" aria-label="일정 통계">
+  <article class="stat-card">
+    <div class="stat-top">
+      <span class="stat-label">전체 일정</span>
+      <span class="stat-icon stat-icon-indigo" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+          <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
+        </svg>
+      </span>
+    </div>
+    <div class="stat-value"><%= safeStats.total %></div>
+    <p class="stat-sub">등록된 모든 할 일</p>
+  </article>
+
+  <article class="stat-card">
+    <div class="stat-top">
+      <span class="stat-label">완료</span>
+      <span class="stat-icon stat-icon-emerald" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+      </span>
+    </div>
+    <div class="stat-value-row">
+      <span class="stat-value"><%= safeStats.done %></span>
+      <span class="pill pill-emerald"><%= completionRate %>% 달성</span>
+    </div>
+    <p class="stat-sub">처리가 완료된 일정</p>
+  </article>
+
+  <article class="stat-card">
+    <div class="stat-top">
+      <span class="stat-label">미완료</span>
+      <span class="stat-icon stat-icon-amber" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"></circle>
+          <polyline points="12 6 12 12 16 14"></polyline>
+        </svg>
+      </span>
+    </div>
+    <div class="stat-value-row">
+      <span class="stat-value"><%= safeStats.active %></span>
+      <% if (safeStats.active > 0) { %>
+        <span class="pill pill-indigo">진행 중</span>
+      <% } else { %>
+        <span class="pill pill-emerald">모두 완료</span>
+      <% } %>
+    </div>
+    <p class="stat-sub">남아 있는 할 일</p>
+  </article>
+</section>
+
+<!-- 오늘의 일정 + 새 할 일 등록 -->
+<section class="dashboard-top-grid">
+  <!-- 오늘의 일정 및 할 일 -->
+  <div class="card today-card">
+    <div class="card-header">
+      <div>
+        <span class="eyebrow">TODAY</span>
+        <h2>오늘의 일정 및 할 일</h2>
+      </div>
+      <span class="pill pill-indigo"><%= safeTodayTodos.length %>건</span>
+    </div>
+
+    <% if (safeTodayTodos.length === 0) { %>
+      <div class="empty-inline">
+        <p>오늘 날짜(<%= formatKoreanDate(todayKey) %>)에 해당하는 일정이 없습니다.</p>
+      </div>
+    <% } else { %>
+      <ul class="today-list">
+        <% safeTodayTodos.forEach(function (todo) {
+          const p = normalizePriority(todo.priority);
+          const sKey = toDateKey(todo.start_date);
+          const dKey = toDateKey(todo.due_date);
+          const isMultiDay = sKey && dKey && sKey !== dKey;
+        %>
+          <li class="today-item priority-<%= p %> <%= todo.done ? 'is-done' : '' %>">
+            <form method="POST" action="/todos/<%= todo.id %>/toggle" class="toggle-form">
+              <button type="submit" class="check-btn <%= todo.done ? 'checked' : '' %>" aria-label="<%= todo.title %> 완료 상태 변경">
+                <% if (todo.done) { %>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                  </svg>
+                <% } %>
+              </button>
+            </form>
+            <div class="today-info">
+              <span class="today-title"><%= todo.title %></span>
+              <% if (isMultiDay) { %>
+                <span class="today-range"><%= formatDateRangeLabel(todo.start_date, todo.due_date) %></span>
+              <% } %>
+            </div>
+            <span class="priority-badge priority-badge-<%= p %>">중요도 <%= p %></span>
+            <a href="/todos/<%= todo.id %>/edit" class="mini-link">수정</a>
+          </li>
+        <% }); %>
+      </ul>
+    <% } %>
+  </div>
+
+  <!-- 할 일 등록 영역 -->
+  <div class="card add-card" id="add-task">
+    <div class="card-header">
+      <div>
+        <span class="eyebrow">QUICK ADD</span>
+        <h2>새 할 일 등록</h2>
+      </div>
+    </div>
+
+    <form method="POST" action="/todos" class="add-form">
+      <div class="form-field">
+        <label for="todoTitleInput">할 일 내용</label>
+        <input type="text" id="todoTitleInput" name="title" placeholder="예: 프로젝트 회의 자료 정리" required>
+      </div>
+
+      <div class="form-field">
+        <span class="field-label">중요도 (배경색 구분)</span>
+        <div class="priority-selector" role="radiogroup" aria-label="중요도 선택">
+          <label class="priority-option p-opt-1">
+            <input type="radio" name="priority" value="1">
+            <span>1 · 낮음</span>
+          </label>
+          <label class="priority-option p-opt-2">
+            <input type="radio" name="priority" value="2" checked>
+            <span>2 · 보통</span>
+          </label>
+          <label class="priority-option p-opt-3">
+            <input type="radio" name="priority" value="3">
+            <span>3 · 높음</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="form-date-grid">
+        <div class="form-field">
+          <label for="todoStartDateInput">시작일 (선택)</label>
+          <input type="date" id="todoStartDateInput" name="start_date" title="시작일 (선택)">
+        </div>
+        <div class="form-field">
+          <label for="todoDateInput">마감일 (선택)</label>
+          <input type="date" id="todoDateInput" name="due_date" title="마감일 (선택)">
+        </div>
+      </div>
+
+      <button type="submit" class="btn btn-primary btn-submit btn-full">일정 추가</button>
+    </form>
+  </div>
+</section>
+
+<!-- 필터 + 보기 전환(목록 / 달력) + 일정 표시 -->
+<section class="schedule-section" id="scheduleSection" aria-label="일정 목록 및 달력">
+  <div class="section-toolbar">
+    <div class="toolbar-left">
+      <nav class="filter-tabs" aria-label="상태 필터">
+        <a href="/todos" class="filter-tab <%= filter === 'all' ? 'on' : '' %>">
+          전체 <span class="tab-count"><%= safeStats.total %></span>
+        </a>
+        <a href="/todos?filter=active" class="filter-tab <%= filter === 'active' ? 'on' : '' %>">
+          미완료 <span class="tab-count"><%= safeStats.active %></span>
+        </a>
+        <a href="/todos?filter=done" class="filter-tab <%= filter === 'done' ? 'on' : '' %>">
+          완료 <span class="tab-count"><%= safeStats.done %></span>
+        </a>
+      </nav>
+
+      <div class="priority-legend" aria-label="중요도 색상 안내">
+        <span class="legend-item"><i class="legend-dot p-dot-1"></i>1 낮음</span>
+        <span class="legend-item"><i class="legend-dot p-dot-2"></i>2 보통</span>
+        <span class="legend-item"><i class="legend-dot p-dot-3"></i>3 높음</span>
+      </div>
+    </div>
+
+    <div class="toolbar-right">
+      <div class="view-switcher" role="tablist" aria-label="화면 보기 방식">
+        <button type="button" class="view-btn active" id="viewListBtn" role="tab" aria-selected="true" data-view="list">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" aria-hidden="true">
+            <line x1="8" y1="6" x2="21" y2="6"></line>
+            <line x1="8" y1="12" x2="21" y2="12"></line>
+            <line x1="8" y1="18" x2="21" y2="18"></line>
+            <circle cx="4" cy="6" r="1"></circle>
+            <circle cx="4" cy="12" r="1"></circle>
+            <circle cx="4" cy="18" r="1"></circle>
+          </svg>
+          <span>목록</span>
+        </button>
+        <button type="button" class="view-btn" id="viewCalendarBtn" role="tab" aria-selected="false" data-view="calendar">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="16" y1="2" x2="16" y2="6"></line>
+            <line x1="8" y1="2" x2="8" y2="6"></line>
+            <line x1="3" y1="10" x2="21" y2="10"></line>
+          </svg>
+          <span>달력</span>
+        </button>
+      </div>
+      <p class="toolbar-meta">총 <strong><%= todos.length %></strong>건</p>
+    </div>
+  </div>
+
+  <!-- 1) 날짜별 목록 보기 -->
+  <div id="listViewPanel">
+    <% if (todos.length === 0) { %>
+      <div class="card empty-state">
+        <div class="empty-icon" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="16" y1="2" x2="16" y2="6"></line>
+            <line x1="8" y1="2" x2="8" y2="6"></line>
+            <line x1="3" y1="10" x2="21" y2="10"></line>
+          </svg>
+        </div>
+        <h3>표시할 일정이 없습니다</h3>
+        <p>상단의 새 할 일 등록 폼에서 새로운 일정을 추가해 보세요.</p>
+      </div>
+    <% } else { %>
+      <div class="card empty-state" id="searchEmptyState" hidden>
+        <h3>검색 결과가 없습니다</h3>
+        <p>다른 검색어를 입력하거나 검색창을 비워 전체 일정을 확인해 주세요.</p>
+      </div>
+
+      <div class="date-groups" id="dateGroups">
+        <% dateGroups.forEach(function (group) { %>
+          <article class="card date-group-card">
+            <div class="date-group-header">
+              <div class="date-group-title">
+                <h3><%= group.label %></h3>
+                <% if (group.badge) { %>
+                  <span class="pill pill-<%= group.badgeType %>"><%= group.badge %></span>
+                <% } %>
+              </div>
+              <span class="group-count"><%= group.items.length %>건</span>
+            </div>
+
+            <ul class="todo-list">
+              <% group.items.forEach(function (todo) {
+                const startKey = toDateKey(todo.start_date);
+                const dueKey = toDateKey(todo.due_date);
+                const effectiveEndKey = dueKey || startKey;
+                const isOverdue = !todo.done && effectiveEndKey && effectiveEndKey < todayKey;
+                const p = normalizePriority(todo.priority);
+              %>
+                <li class="todo-item priority-<%= p %> <%= todo.done ? 'is-done' : '' %>" data-title="<%= todo.title.toLowerCase() %>">
+                  <form method="POST" action="/todos/<%= todo.id %>/toggle" class="toggle-form">
+                    <button type="submit" class="check-btn <%= todo.done ? 'checked' : '' %>" aria-label="<%= todo.title %> 완료 토글">
+                      <% if (todo.done) { %>
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                          <polyline points="20 6 9 17 4 12"></polyline>
+                        </svg>
+                      <% } %>
+                    </button>
+                  </form>
+
+                  <div class="todo-body">
+                    <span class="todo-title"><%= todo.title %></span>
+                    <div class="todo-meta">
+                      <span class="priority-badge priority-badge-<%= p %>">중요도 <%= p %> · <%= priorityLabel(p) %></span>
+                      <span class="meta-chip <%= isOverdue ? 'overdue' : '' %>">
+                        <%= formatDateRangeLabel(todo.start_date, todo.due_date) %>
+                      </span>
+                      <span class="meta-status <%= todo.done ? 'done' : 'active' %>">
+                        <%= todo.done ? "완료" : "미완료" %>
+                      </span>
+                    </div>
+                  </div>
+
+                  <div class="todo-actions">
+                    <a class="action-btn edit-link" href="/todos/<%= todo.id %>/edit">수정</a>
+                    <form method="POST" action="/todos/<%= todo.id %>/delete" class="js-delete-form" data-todo-title="<%= todo.title %>">
+                      <button type="submit" class="action-btn delete-btn">삭제</button>
+                    </form>
+                  </div>
+                </li>
+              <% }); %>
+            </ul>
+          </article>
+        <% }); %>
+      </div>
+    <% } %>
+  </div>
+
+  <!-- 2) 달력 보기 -->
+  <div id="calendarViewPanel" hidden>
+    <article class="card calendar-card">
+      <div class="calendar-header">
+        <div class="calendar-title-wrap">
+          <span class="eyebrow">CALENDAR</span>
+          <h2 id="calendarMonthLabel"></h2>
+        </div>
+        <div class="calendar-controls">
+          <button type="button" class="btn btn-ghost btn-sm" id="calPrevBtn" aria-label="이전 달">&lt; 이전</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="calTodayBtn">오늘</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="calNextBtn" aria-label="다음 달">다음 &gt;</button>
+        </div>
+      </div>
+
+      <div class="calendar-weekdays" aria-hidden="true">
+        <span class="sun">일</span>
+        <span>월</span>
+        <span>화</span>
+        <span>수</span>
+        <span>목</span>
+        <span>금</span>
+        <span class="sat">토</span>
+      </div>
+
+      <div class="calendar-grid" id="calendarGrid" role="grid" aria-label="월간 일정 달력"></div>
+    </article>
+
+    <!-- 선택한 날짜 상세 일정 -->
+    <article class="card calendar-day-card" id="calendarDayCard">
+      <div class="card-header">
+        <div>
+          <span class="eyebrow">SELECTED DATE</span>
+          <h2 id="calendarDayTitle">날짜를 선택해 주세요</h2>
+        </div>
+        <span class="pill pill-indigo" id="calendarDayCount">0건</span>
+      </div>
+      <div id="calendarDayBody"></div>
+    </article>
+
+    <!-- 일정 미지정 할 일 -->
+    <article class="card calendar-nodate-card" id="calendarNoDateCard" hidden>
+      <div class="card-header">
+        <div>
+          <span class="eyebrow">UNSCHEDULED</span>
+          <h2>날짜 미지정 일정</h2>
+        </div>
+        <span class="pill pill-neutral" id="calendarNoDateCount">0건</span>
+      </div>
+      <div id="calendarNoDateBody"></div>
+    </article>
+  </div>
+</section>
+
+<script type="application/json" id="todosDataJson"><%- todosJson %></script>
+<script type="application/json" id="todayKeyJson"><%- JSON.stringify(todayKey) %></script>
 
 <%- include("partials/footer") %>

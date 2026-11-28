@@ -1,14 +1,71 @@
-<%- include("partials/header") %>
+<%
+  function toDateInputValue(val) {
+    if (!val) return "";
+    const d = new Date(val);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
 
-<h1>할 일 수정</h1>
+  const currentPriority = [1, 2, 3].includes(Number(todo.priority)) ? Number(todo.priority) : 2;
+%>
 
-<form method="POST" action="/todos/<%= todo.id %>/edit" class="add-form">
-  <input type="text" name="title" value="<%= todo.title %>" required>
-  <input type="date" name="due_date"
-         value="<%= todo.due_date ? new Date(todo.due_date).toISOString().slice(0, 10) : '' %>">
-  <button type="submit">저장</button>
-</form>
+<%- include("partials/header", { filter: "", stats: null, pageTitle: "일정 수정", showSearch: false }) %>
 
-<p><a href="/todos">← 목록으로</a></p>
+<section class="edit-wrapper">
+  <div class="card edit-card">
+    <div class="card-header">
+      <div>
+        <span class="eyebrow">EDIT TASK</span>
+        <h2>할 일 정보 수정</h2>
+      </div>
+      <span class="pill <%= todo.done ? 'pill-emerald' : 'pill-indigo' %>">
+        <%= todo.done ? "완료됨" : "미완료" %>
+      </span>
+    </div>
+
+    <form method="POST" action="/todos/<%= todo.id %>/edit" class="edit-form">
+      <div class="form-field">
+        <label for="editTitleInput">할 일 제목</label>
+        <input type="text" id="editTitleInput" name="title" value="<%= todo.title %>" required>
+      </div>
+
+      <div class="form-field">
+        <span class="field-label">중요도 (배경색 구분)</span>
+        <div class="priority-selector" role="radiogroup" aria-label="중요도 선택">
+          <label class="priority-option p-opt-1">
+            <input type="radio" name="priority" value="1" <%= currentPriority === 1 ? 'checked' : '' %>>
+            <span>1 · 낮음</span>
+          </label>
+          <label class="priority-option p-opt-2">
+            <input type="radio" name="priority" value="2" <%= currentPriority === 2 ? 'checked' : '' %>>
+            <span>2 · 보통</span>
+          </label>
+          <label class="priority-option p-opt-3">
+            <input type="radio" name="priority" value="3" <%= currentPriority === 3 ? 'checked' : '' %>>
+            <span>3 · 높음</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="form-date-grid">
+        <div class="form-field">
+          <label for="editStartDateInput">시작일 (선택)</label>
+          <input type="date" id="editStartDateInput" name="start_date" value="<%= toDateInputValue(todo.start_date) %>">
+        </div>
+        <div class="form-field">
+          <label for="editDateInput">마감일 (선택)</label>
+          <input type="date" id="editDateInput" name="due_date" value="<%= toDateInputValue(todo.due_date) %>">
+        </div>
+      </div>
+
+      <div class="edit-actions">
+        <a href="/todos" class="btn btn-ghost">← 목록으로</a>
+        <button type="submit" class="btn btn-primary">변경사항 저장</button>
+      </div>
+    </form>
+  </div>
+</section>
 
 <%- include("partials/footer") %>
