@@ -14,27 +14,65 @@ router.get("/", async (req, res, next) => {
     let sql = "SELECT * FROM todos";
     if (filter === "active") sql += " WHERE done = FALSE";
     if (filter === "done") sql += " WHERE done = TRUE";
-    sql += " ORDER BY due_date IS NULL, due_date, created_at DESC";
+    sql += " ORDER BY COALESCE(start_date, due_date) IS NULL, COALESCE(start_date, due_date), due_date, created_at DESC";
 
-    const [todos] = await pool.query(sql);
-    res.render("todos", { todos, filter });
+    const [
+      [todos],
+      [statsRows],
+      [todayTodos],
+    ] = await Promise.all([
+      pool.query(sql),
+      pool.query(
+        "SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN done = TRUE THEN 1 ELSE 0 END), 0) AS done, COALESCE(SUM(CASE WHEN done = FALSE THEN 1 ELSE 0 END), 0) AS active FROM todos"
+      ),
+      pool.query(
+        "SELECT * FROM todos WHERE (start_date IS NOT NULL AND due_date IS NOT NULL AND CURDATE() BETWEEN start_date AND due_date) OR (start_date IS NULL AND due_date = CURDATE()) OR (due_date IS NULL AND start_date = CURDATE()) ORDER BY done ASC, priority DESC, created_at DESC"
+      ),
+    ]);
+
+    const rawStats = statsRows[0] || { total: 0, done: 0, active: 0 };
+    const stats = {
+      total: Number(rawStats.total) || 0,
+      done: Number(rawStats.done) || 0,
+      active: Number(rawStats.active) || 0,
+    };
+
+    res.render("todos", { todos, filter, stats, todayTodos });
   } catch (err) {
     next(err);
   }
 });
 
+function parsePriority(raw) {
+  const num = Number(raw);
+  return [1, 2, 3].includes(num) ? num : 2;
+}
+
+function normalizeDateRange(rawStart, rawDue) {
+  let startDate = rawStart || null;
+  let dueDate = rawDue || null;
+  if (startDate && dueDate && startDate > dueDate) {
+    [startDate, dueDate] = [dueDate, startDate];
+  }
+  return { startDate, dueDate };
+}
+
 // [C] 등록: 폼 POST → INSERT → 목록으로 redirect (실습 2)
 router.post("/", async (req, res, next) => {
   try {
     const title = (req.body.title || "").trim();
-    const dueDate = req.body.due_date || null; // 빈 값이면 NULL
+    const { startDate, dueDate } = normalizeDateRange(
+      req.body.start_date,
+      req.body.due_date
+    );
+    const priority = parsePriority(req.body.priority);
 
     if (title === "") return res.redirect("/todos");
 
-    await pool.query("INSERT INTO todos (title, due_date) VALUES (?, ?)", [
-      title,
-      dueDate,
-    ]);
+    await pool.query(
+      "INSERT INTO todos (title, start_date, due_date, priority) VALUES (?, ?, ?, ?)",
+      [title, startDate, dueDate, priority]
+    );
     res.redirect("/todos"); // 새로고침해도 중복 등록 안 되도록 redirect
   } catch (err) {
     next(err);
@@ -66,15 +104,19 @@ router.get("/:id/edit", async (req, res, next) => {
   }
 });
 
-// [U] 제목·마감일 수정 (실습 3)
+// [U] 제목·시작일·마감일·중요도 수정 (실습 3)
 router.post("/:id/edit", async (req, res, next) => {
   try {
     const title = (req.body.title || "").trim();
-    const dueDate = req.body.due_date || null;
+    const { startDate, dueDate } = normalizeDateRange(
+      req.body.start_date,
+      req.body.due_date
+    );
+    const priority = parsePriority(req.body.priority);
     if (title !== "") {
       await pool.query(
-        "UPDATE todos SET title = ?, due_date = ? WHERE id = ?",
-        [title, dueDate, req.params.id]
+        "UPDATE todos SET title = ?, start_date = ?, due_date = ?, priority = ? WHERE id = ?",
+        [title, startDate, dueDate, priority, req.params.id]
       );
     }
     res.redirect("/todos");
